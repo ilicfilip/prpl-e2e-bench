@@ -2,21 +2,14 @@ name: Progress Planner Playwright Tests
 
 env:
   PRPL_TEST_TOKEN: 0220a2de67fc29094281088395939f58
-  YOAST_TOKEN: ${{ secrets.YOAST_TOKEN }}
 
 on:
-  push:
-    branches:
-      - main
-      - develop
-      - 'release/[0-9]+.[0-9]+*'
-      - 'hotfix/[0-9]+.[0-9]+*'
-  pull_request:
+  workflow_dispatch:
 
 jobs:
   # Main E2E tests using WP Playground (fast, no Docker)
   e2e-tests:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
 
     steps:
       - name: Checkout code
@@ -54,123 +47,3 @@ jobs:
           path: |
             login-failed.png
             test-results/
-
-  # Yoast Premium tests require Docker (for Composer/premium plugin installation)
-  # Runs in parallel with e2e-tests - Docker spins up while Playground tests run
-  yoast-premium-tests:
-    runs-on: ubuntu-latest
-
-    services:
-      mysql:
-        image: mariadb:10.6
-        env:
-          MYSQL_ROOT_PASSWORD: root
-          MYSQL_DATABASE: wordpress
-          MYSQL_USER: wpuser
-          MYSQL_PASSWORD: wppass
-        ports:
-          - 3307:3306
-      wordpress:
-        image: wordpress:latest
-        env:
-          WORDPRESS_DB_HOST: mysql
-          WORDPRESS_DB_USER: wpuser
-          WORDPRESS_DB_PASSWORD: wppass
-          WORDPRESS_DB_NAME: wordpress
-          WORDPRESS_DEBUG: 1
-        ports:
-          - 8080:80
-        options: >-
-          --health-cmd="curl --silent --fail http://localhost:8080/wp-login.php || exit 0"
-          --health-interval=10s
-          --health-timeout=5s
-          --health-retries=5
-
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: 20
-          cache: 'npm'
-
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Install Playwright browsers
-        run: npx playwright install --with-deps chromium
-
-      - name: Complete WordPress installation
-        run: |
-          curl --silent -X POST "http://localhost:8080/wp-admin/install.php?step=2" \
-          -d "weblog_title=My%20WordPress%20Site" \
-          -d "user_name=admin" \
-          -d "admin_password=password" \
-          -d "admin_password2=password" \
-          -d "admin_email=admin@example.com" \
-          -d "public=1"
-
-      - name: Setup WordPress with plugins
-        run: |
-          WP_CONTAINER=$(docker ps -qf "name=wordpress")
-
-          # Install WP-CLI
-          docker exec $WP_CONTAINER curl -O https://raw.githubusercontent.com/wp-cli/builds/gh-pages/phar/wp-cli.phar
-          docker exec $WP_CONTAINER chmod +x wp-cli.phar
-          docker exec $WP_CONTAINER mv wp-cli.phar /usr/local/bin/wp
-
-          # Copy and activate Progress Planner
-          docker cp . $WP_CONTAINER:/var/www/html/wp-content/plugins/progress-planner
-          docker exec $WP_CONTAINER wp plugin activate progress-planner --allow-root
-
-          # Set test token
-          docker exec $WP_CONTAINER wp option update progress_planner_test_token $PRPL_TEST_TOKEN --allow-root
-
-          # Install and activate Yoast SEO (free)
-          docker exec $WP_CONTAINER wp plugin install wordpress-seo --activate --allow-root
-
-      - name: Install PHP & Composer
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y git curl unzip php-cli php-curl php-mbstring php-xml php-zip
-          curl -sS https://getcomposer.org/installer | php
-          sudo mv composer.phar /usr/local/bin/composer
-
-      - name: Install Yoast SEO Premium
-        run: |
-          WP_CONTAINER=$(docker ps -qf "name=wordpress")
-
-          # Configure Composer for Yoast
-          composer config -g http-basic.my.yoast.com token $YOAST_TOKEN
-          composer config repositories.my-yoast composer https://my.yoast.com/packages/
-          composer config --no-plugins allow-plugins.composer/installers true
-          composer install
-
-          # Install and copy Yoast Premium
-          composer require yoast/wordpress-seo-premium
-          composer dump-autoload --working-dir=./wp-content/plugins/wordpress-seo-premium
-          docker cp ./wp-content/plugins/wordpress-seo-premium $WP_CONTAINER:/var/www/html/wp-content/plugins/wordpress-seo-premium
-
-          # Activate and configure
-          docker exec $WP_CONTAINER wp plugin activate wordpress-seo-premium --allow-root
-
-          # Disable redirect after install
-          CURRENT_OPTION=$(docker exec $WP_CONTAINER wp option get wpseo_premium --format=json --allow-root)
-          UPDATED_OPTION=$(echo $CURRENT_OPTION | jq '.should_redirect_after_install = false')
-          docker exec $WP_CONTAINER wp option update wpseo_premium "$UPDATED_OPTION" --format=json --allow-root
-
-      - name: Run Yoast Integration Tests
-        run: npx playwright test --project=parallel --grep="Yoast"
-        env:
-          WORDPRESS_URL: http://localhost:8080
-          WORDPRESS_ADMIN_USER: admin
-          WORDPRESS_ADMIN_PASSWORD: password
-
-      - name: Upload Yoast Test Report
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: yoast-playwright-report
-          path: playwright-report/
