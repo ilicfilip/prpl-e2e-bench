@@ -42,6 +42,20 @@ async function globalSetup(config: FullConfig): Promise<void> {
       console.log('Using WP Playground auto-login...');
       console.log(`Navigating to: ${baseURL}/wp-admin/`);
 
+      // Playground answers requests before its blueprint has finished, and the blueprint's
+      // `"login": true` runs as its last step. Until then wp-admin redirects to wp-login.php
+      // (and the plugin may not be active yet). Wait for the auto-login instead of racing it
+      // with a password login; it also means the whole blueprint has run.
+      const autoLoginDeadline = Date.now() + 60000;
+      while (Date.now() < autoLoginDeadline) {
+        await page.goto(`${baseURL}/wp-admin/`, { waitUntil: 'domcontentloaded', timeout: 30000 });
+        if (!page.url().includes('wp-login.php')) {
+          console.log('Blueprint finished: auto-logged in');
+          break;
+        }
+        await page.waitForTimeout(500);
+      }
+
       // Wait for the page to load and retry a few times if needed
       let retries = 3;
       while (retries > 0) {
